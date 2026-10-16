@@ -1,0 +1,107 @@
+name: Build Windows x64 Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Publish as a GitHub Release (requires tag or auto-creates draft release)'
+        type: boolean
+        default: false
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows x86_64 Installer
+    runs-on: windows-latest
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUSTFLAGS: -C debuginfo=line-tables-only
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Strawberry Perl (ensure native Perl for OpenSSL)
+        shell: pwsh
+        run: |
+          if (Test-Path "C:\Strawberry\perl\bin") {
+            "C:\Strawberry\perl\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            "C:\Strawberry\c\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          } else {
+            choco install strawberryperl -y
+            "C:\Strawberry\perl\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          }
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.7
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./ -> target"
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Build frontend
+        run: pnpm build
+
+      - name: Build Tauri desktop installer
+        shell: pwsh
+        run: |
+          pnpm tauri build --target x86_64-pc-windows-msvc --bundles nsis --no-sign
+
+      - name: Locate installer
+        id: locate-installer
+        shell: pwsh
+        run: |
+          $bundleDir = "target/x86_64-pc-windows-msvc/release/bundle/nsis"
+          $installer = Get-ChildItem -Path $bundleDir -Filter "*.exe" | Select-Object -First 1
+          if (-not $installer) {
+            Write-Error "Installer .exe not found in $bundleDir"
+            exit 1
+          }
+          Write-Host "Found installer: $($installer.FullName) ($($installer.Length) bytes)"
+          "installer_path=$($installer.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "installer_name=$($installer.Name)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+          # Calculate SHA256 checksum
+          $hash = (Get-FileHash -Path $installer.FullName -Algorithm SHA256).Hash
+          "$hash *$($installer.Name)" | Out-File -FilePath "$bundleDir\$($installer.Name).sha256" -Encoding utf8
+          "checksum_path=$bundleDir\$($installer.Name).sha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.locate-installer.outputs.installer_name }}
+          path: |
+            ${{ steps.locate-installer.outputs.installer_path }}
+            ${{ steps.locate-installer.outputs.checksum_path }}
+          if-no-files-found: error
+
+      - name: Publish to GitHub Release
+        if: ${{ github.event_name == 'push' || inputs.create_release == true }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.locate-installer.outputs.installer_path }}
+            ${{ steps.locate-installer.outputs.checksum_path }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
