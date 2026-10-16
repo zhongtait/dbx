@@ -1,0 +1,68 @@
+name: Sync Upstream (Rebase)
+
+on:
+  schedule:
+    # 每天北京时间上午 10:00 (UTC 02:00) 自动定时检测
+    - cron: '0 2 * * *'
+  workflow_dispatch: # 支持在 GitHub Actions 页面随时手动点击运行
+
+permissions:
+  contents: write # 授予推送 main 分支的写权限
+  actions: write  # 授予触发其他工作流的权限
+
+jobs:
+  sync:
+    name: Rebase on Upstream Main
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0 # 获取完整 Git 历史才能进行 rebase
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch Upstream
+        run: |
+          git remote add upstream https://github.com/t8y2/dbx.git
+          git fetch upstream main
+
+      - name: Check and Rebase
+        id: sync_step
+        run: |
+          # 检查上游是否有新 commit
+          BEHIND_COUNT=$(git rev-list --count HEAD..upstream/main)
+          echo "Behind upstream by: $BEHIND_COUNT commits"
+
+          if [ "$BEHIND_COUNT" -eq "0" ]; then
+            echo "✅ 已经是最新状态，无需同步。"
+            echo "has_update=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "🚀 检测到上游有 $BEHIND_COUNT 个新提交，正在执行 rebase..."
+          
+          # 尝试执行 rebase
+          if git rebase upstream/main; then
+            echo "✅ Rebase 成功，正在推送到 origin main..."
+            git push origin main --force-with-lease
+            echo "has_update=true" >> $GITHUB_OUTPUT
+          else
+            echo "::error::❌ Rebase 发生代码冲突！自动回滚以保护仓库分支..."
+            git rebase --abort
+            exit 1
+          fi
+
+      - name: Auto Trigger Windows Release
+        if: steps.sync_step.outputs.has_update == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "📦 正在自动触发 Windows Release 打包工作流..."
+          gh workflow run build-windows.yml --ref main || true
