@@ -1,0 +1,148 @@
+name: Build Windows x64 Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: 'Target branch, tag, or commit to build (e.g. main, feat/...)'
+        required: true
+        default: 'main'
+        type: string
+      create_release:
+        description: 'Publish as a GitHub Release (requires tag or auto-creates draft release)'
+        type: boolean
+        default: false
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-windows-${{ inputs.target_branch || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    name: Build Windows x86_64 Installer
+    runs-on: windows-latest
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_RELEASE_LTO: "thin"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_branch || github.ref }}
+          fetch-depth: 1
+
+      - name: Log build target info
+        shell: pwsh
+        run: |
+          Write-Host "Building target ref: ${{ inputs.target_branch || github.ref }}"
+          Write-Host "Commit SHA: $(git rev-parse HEAD)"
+          Write-Host "Commit message: $(git log -1 --pretty=%B)"
+
+      - name: Setup Strawberry Perl (ensure native Perl for OpenSSL)
+        shell: pwsh
+        run: |
+          if (Test-Path "C:\Strawberry\perl\bin") {
+            "C:\Strawberry\perl\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            "C:\Strawberry\c\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          } else {
+            choco install strawberryperl -y --no-progress
+            "C:\Strawberry\perl\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          }
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./ -> target"
+          cache-on-failure: true
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Tauri desktop installer
+        shell: pwsh
+        run: |
+          pnpm tauri build --ci --target x86_64-pc-windows-msvc --bundles nsis --no-sign
+
+      - name: Locate installer
+        id: locate-installer
+        shell: pwsh
+        run: |
+          $bundleDir = "target/x86_64-pc-windows-msvc/release/bundle/nsis"
+          $installer = Get-ChildItem -Path $bundleDir -Filter "*.exe" | Select-Object -First 1
+          if (-not $installer) {
+            Write-Error "Installer .exe not found in $bundleDir"
+            exit 1
+          }
+          Write-Host "Found installer: $($installer.FullName) ($($installer.Length) bytes)"
+          "installer_path=$($installer.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "installer_name=$($installer.Name)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+          # Calculate SHA256 checksum
+          $hash = (Get-FileHash -Path $installer.FullName -Algorithm SHA256).Hash
+          "$hash *$($installer.Name)" | Out-File -FilePath "$bundleDir\$($installer.Name).sha256" -Encoding utf8
+          "checksum_path=$bundleDir\$($installer.Name).sha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+          # Markdown Summary for GitHub Actions Run Page
+          $sizeMb = [math]::Round($installer.Length / 1MB, 2)
+          $targetRef = "${{ inputs.target_branch || github.ref }}"
+          $commitSha = git rev-parse --short HEAD
+          $summary = @"
+          ### 🚀 Windows x64 Build Succeeded
+
+          | Property | Value |
+          | :--- | :--- |
+          | **Target Branch / Ref** | \`$targetRef\` |
+          | **Commit SHA** | \`$commitSha\` |
+          | **Installer File** | \`$($installer.Name)\` |
+          | **File Size** | **$sizeMb MB** |
+          | **SHA256 Checksum** | \`$hash\` |
+
+          The installer is available for download in the **Artifacts** section below.
+          "@
+          $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.locate-installer.outputs.installer_name }}
+          path: |
+            ${{ steps.locate-installer.outputs.installer_path }}
+            ${{ steps.locate-installer.outputs.checksum_path }}
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Publish to GitHub Release
+        if: ${{ github.event_name == 'push' || inputs.create_release == true }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ steps.locate-installer.outputs.installer_path }}
+            ${{ steps.locate-installer.outputs.checksum_path }}
+          tag_name: ${{ inputs.target_branch || github.ref_name }}
+          draft: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
