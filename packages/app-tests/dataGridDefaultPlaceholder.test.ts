@@ -49,3 +49,23 @@ test("existing nulls, explicit values, and unmapped new columns do not show sche
   assert.equal(resolveDataGridNewRowCellPlaceholder({ row: { data: [null], isNew: true }, columnIndex: 0, column: undefined, draftFallback: "New" }), null);
   assert.equal(resolveDataGridNewRowCellPlaceholder({ row: { data: [null], isNew: false, isDraft: true }, columnIndex: 0, column: undefined, draftFallback: "New" }), "New");
 });
+
+test("auto-generated columns render <generated> placeholder for new and draft rows", () => {
+  const autoIncColumn = { ...column("id", null), extra: "auto_increment", is_primary_key: true };
+  assert.equal(resolveDataGridNewRowCellPlaceholder({ row: { data: [null], isNew: true }, columnIndex: 0, column: autoIncColumn, draftFallback: "New" }), "<generated>");
+  assert.equal(resolveDataGridNewRowCellPlaceholder({ row: { data: [null], isNew: false, isDraft: true }, columnIndex: 0, column: autoIncColumn, draftFallback: "New" }), "<generated>");
+
+  const serialColumn = { ...column("id", null), data_type: "serial", is_primary_key: true };
+  assert.equal(resolveDataGridNewRowCellPlaceholder({ row: { data: [null], isNew: true }, columnIndex: 0, column: serialColumn, draftFallback: "New" }), "<generated>");
+
+  const nextvalColumn = column("id", "nextval('user_id_seq'::regclass)");
+  assert.equal(resolveDataGridNewRowCellPlaceholder({ row: { data: [null], isNew: true }, columnIndex: 0, column: nextvalColumn, draftFallback: "New" }), "<generated>");
+
+  const sqlitePk = { ...column("id", null), data_type: "INTEGER", is_primary_key: true };
+  assert.equal(resolveDataGridNewRowCellPlaceholder({ row: { data: [null], isNew: true }, columnIndex: 0, column: sqlitePk, draftFallback: "New", databaseType: "sqlite" }), "<generated>");
+
+  const identityColumn = { ...column("id", null), is_identity: true };
+  assert.equal(resolveDataGridNewRowCellPlaceholder({ row: { data: [null], isNew: true }, columnIndex: 0, column: identityColumn as ColumnInfo, draftFallback: "New" }), "<generated>");
+
+  assert.equal(resolveDataGridNewRowCellPlaceholder({ row: { data: [42], isNew: true }, columnIndex: 0, column: autoIncColumn, draftFallback: "New" }), null);
+});

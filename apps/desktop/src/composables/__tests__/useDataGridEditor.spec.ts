@@ -1417,6 +1417,56 @@ describe("useDataGridEditor appendPastedRowsToNewRow", () => {
       { anchorId: 0, position: "below" },
     ]);
   });
+
+  it("clears auto-increment and generated primary keys when cloning a row without entering edit mode", async () => {
+    const editor = createEditor(
+      undefined,
+      true,
+      undefined,
+      undefined,
+      [[1, "Alice", "Smith"]],
+      undefined,
+      [{ name: "first", data_type: "INTEGER", extra: "auto_increment", is_primary_key: true } as any, { name: "hidden", data_type: "varchar" }, { name: "last", data_type: "varchar" }],
+      false,
+      false,
+      ref(true),
+      undefined,
+      "mysql",
+    );
+    editor.newRows.value = [];
+    editor.newRowMeta.value = [];
+
+    editor.cloneRow(0);
+    await nextTick();
+
+    expect(editor.newRows.value[0]).toEqual([null, "Alice", "Smith"]);
+    expect(editor.editingCell.value).toBeNull();
+  });
+
+  it("clears SQLite integer primary keys when cloning a row", async () => {
+    const editor = createEditor(
+      undefined,
+      true,
+      undefined,
+      undefined,
+      [[42, "Bob", "Jones"]],
+      undefined,
+      [{ name: "first", data_type: "INTEGER", is_primary_key: true } as any, { name: "hidden", data_type: "varchar" }, { name: "last", data_type: "varchar" }],
+      false,
+      false,
+      ref(true),
+      undefined,
+      "sqlite",
+    );
+    editor.newRows.value = [];
+    editor.newRowMeta.value = [];
+
+    editor.cloneRow(0);
+    await nextTick();
+
+    expect(editor.newRows.value[0]).toEqual([null, "Bob", "Jones"]);
+    expect(editor.editingCell.value).toBeNull();
+  });
 });
 
 describe("useDataGridEditor saveChanges reload", () => {

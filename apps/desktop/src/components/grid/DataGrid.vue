@@ -34,6 +34,7 @@ import {
   Loader2,
   X,
   Undo2,
+  Redo2,
   WrapText,
   Info,
   Rows3,
@@ -5639,6 +5640,30 @@ const deleteColumnToolbarCapability = computed<DataGridToolbarActionCapability>(
     },
   };
 });
+const undoToolbarCapability = computed<DataGridToolbarActionCapability>(() => {
+  const shortcut = settingsStore.editorSettings.shortcuts.undo;
+  return {
+    label: t("grid.undoChange"),
+    tooltip: shortcut ? `${t("grid.undoChange")} (${formatShortcut(shortcut)})` : t("grid.undoChange"),
+    visible: saveToolbarState.value.showActions,
+    disabled: !canUndoPendingChange.value || isSaving.value,
+    onTrigger: () => {
+      void undoGridChange();
+    },
+  };
+});
+const redoToolbarCapability = computed<DataGridToolbarActionCapability>(() => {
+  const shortcut = settingsStore.editorSettings.shortcuts.redo;
+  return {
+    label: t("grid.redoChange"),
+    tooltip: shortcut ? `${t("grid.redoChange")} (${formatShortcut(shortcut)})` : t("grid.redoChange"),
+    visible: saveToolbarState.value.showActions,
+    disabled: !canRedoPendingChange.value || isSaving.value,
+    onTrigger: () => {
+      void redoGridChange();
+    },
+  };
+});
 const dropColumnConfirmMessage = computed(() => {
   const table = pendingDropColumnTarget.value?.tableName ?? "";
   if (pendingDropColumnNames.value.length > 1) {
@@ -8463,6 +8488,7 @@ function newRowCellPlaceholder(item: RowItem | undefined, columnIndex: number): 
     columnIndex,
     column: tableColumnsByResultIndex.value[columnIndex],
     draftFallback: quickEntryDraftPlaceholder.value,
+    databaseType: resolvedDatabaseType.value,
   });
 }
 
@@ -11714,13 +11740,19 @@ async function onCellEditKeydown(event: KeyboardEvent) {
 }
 
 function undoGridChange(): boolean {
-  if (editingCell.value || !canUndoPendingChange.value) return false;
+  if (editingCell.value) {
+    cancelEdit();
+  }
+  if (!canUndoPendingChange.value) return false;
   undoPendingChange();
   return true;
 }
 
 function redoGridChange(): boolean {
-  if (editingCell.value || !canRedoPendingChange.value) return false;
+  if (editingCell.value) {
+    cancelEdit();
+  }
+  if (!canRedoPendingChange.value) return false;
   redoPendingChange();
   return true;
 }
@@ -15164,6 +15196,25 @@ const gridContextMenuItems = computed<ContextMenuItem[]>(() => {
         children: generateSelectionMenuItems(!hasEditableSelection),
       },
     }),
+    effectiveEditable.value && hasDataGridSaveTarget.value
+      ? [
+          { label: "", separator: true },
+          {
+            label: t("grid.undoChange"),
+            action: () => void undoGridChange(),
+            icon: Undo2,
+            shortcut: settingsStore.editorSettings.shortcuts.undo ?? "Mod+Z",
+            disabled: () => !canUndoPendingChange.value || isSaving.value,
+          },
+          {
+            label: t("grid.redoChange"),
+            action: () => void redoGridChange(),
+            icon: Redo2,
+            shortcut: settingsStore.editorSettings.shortcuts.redo ?? "Mod+Y",
+            disabled: () => !canRedoPendingChange.value || isSaving.value,
+          },
+        ]
+      : [],
     [
       { label: "", separator: true, visible: gridSnapshotContext !== null },
       {
@@ -15407,6 +15458,8 @@ useUpdateBlocker(() => (hasPendingChanges.value || hasPendingDataEditorDraft.val
             :add-row="addRowToolbarCapability"
             :delete-row="deleteRowToolbarCapability"
             :delete-column="deleteColumnToolbarCapability"
+            :undo="undoToolbarCapability"
+            :redo="redoToolbarCapability"
             :layer-preview="layerPreviewToolbarCapability"
             :preview="previewToolbarCapability"
             :save="saveToolbarCapability"

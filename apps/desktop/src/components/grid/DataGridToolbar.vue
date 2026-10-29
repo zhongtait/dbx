@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { Check, ChevronDown, Copy, Eye, Loader2, Map, Plus, RefreshCcw, RotateCcw, Rows3, Save, TableProperties, Trash2, Upload } from "@lucide/vue";
+import { Check, ChevronDown, Copy, Eye, Loader2, Map, Plus, Redo2, RefreshCcw, RotateCcw, Rows3, Save, TableProperties, Trash2, Undo2, Upload } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -35,6 +35,8 @@ const props = defineProps<{
   addRow?: DataGridToolbarAddRowCapability;
   deleteRow?: DataGridToolbarActionCapability;
   deleteColumn?: DataGridToolbarActionCapability;
+  undo?: DataGridToolbarActionCapability;
+  redo?: DataGridToolbarActionCapability;
   copyData?: DataGridToolbarCopyCapability;
   exportData?: DataGridToolbarExportCapability;
   transpose?: DataGridToolbarActionCapability;
@@ -66,6 +68,8 @@ const visibleActionOrder = computed<DataGridToolbarActionKey[]>(() => {
     addRow: isDataGridToolbarCapabilityVisible(props.addRow),
     deleteRow: isDataGridToolbarCapabilityVisible(props.deleteRow),
     deleteColumn: isDataGridToolbarCapabilityVisible(props.deleteColumn),
+    undo: isDataGridToolbarCapabilityVisible(props.undo),
+    redo: isDataGridToolbarCapabilityVisible(props.redo),
     exportData: isDataGridToolbarCapabilityVisible(props.exportData),
     transpose: isDataGridToolbarCapabilityVisible(props.transpose),
     tableInfo: isDataGridToolbarCapabilityVisible(props.tableInfo),
@@ -222,6 +226,26 @@ function actionLabelClass(action: DataGridToolbarActionKey) {
         </Button>
       </TooltipTrigger>
       <TooltipContent side="bottom">{{ deleteColumn?.tooltip ?? deleteColumn?.label }}</TooltipContent>
+    </Tooltip>
+
+    <Tooltip v-if="isDataGridToolbarCapabilityVisible(undo)">
+      <TooltipTrigger as-child>
+        <Button data-toolbar-action="undo" variant="ghost" size="sm" :class="actionButtonClass('undo')" :disabled="isDataGridToolbarCapabilityDisabled(undo)" @click="void triggerDataGridToolbarAction(undo)">
+          <Undo2 class="data-grid-topbar-action-icon h-3 w-3" />
+          <span class="data-grid-topbar-action-label" :class="actionLabelClass('undo')">{{ undo?.label }}</span>
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">{{ undo?.tooltip ?? undo?.label }}</TooltipContent>
+    </Tooltip>
+
+    <Tooltip v-if="isDataGridToolbarCapabilityVisible(redo)">
+      <TooltipTrigger as-child>
+        <Button data-toolbar-action="redo" variant="ghost" size="sm" :class="actionButtonClass('redo')" :disabled="isDataGridToolbarCapabilityDisabled(redo)" @click="void triggerDataGridToolbarAction(redo)">
+          <Redo2 class="data-grid-topbar-action-icon h-3 w-3" />
+          <span class="data-grid-topbar-action-label" :class="actionLabelClass('redo')">{{ redo?.label }}</span>
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">{{ redo?.tooltip ?? redo?.label }}</TooltipContent>
     </Tooltip>
 
     <DropdownMenu v-if="isDataGridToolbarCapabilityVisible(exportData)">
