@@ -48,16 +48,19 @@ function createEditorWithResult(
   readonlyColumnIndexes?: number[],
   existingRows: CellValue[][] = [],
   onCellValueChanged?: (rowId: number, columnIndex: number) => void,
-  tableColumns?: Array<{ name: string; data_type: string; extra?: string; column_default?: string }>,
+  tableColumns?: Array<{ name: string; data_type: string; extra?: string; column_default?: string; is_primary_key?: boolean; is_unique?: boolean }>,
   mongoCollectionGrid = false,
   quickEntry = false,
   editable = ref(true),
   resultColumnTypes?: string[],
   databaseType: import("@/types/database").DatabaseType = "postgres",
+  indexes?: import("@/types/database").IndexInfo[],
+  columnIndexMap?: Map<string, import("@/lib/dataGrid/dataGridColumnIndexIcon").ColumnIndexKind>,
+  initialEditColumn?: ComputedRef<number>,
 ) {
   let editor: ReturnType<typeof useDataGridEditor>;
   const result = ref<{ columns: string[]; rows: CellValue[][]; column_types?: string[] }>({
-    columns: ["first", "hidden", "last"],
+    columns: tableColumns ? tableColumns.map((c) => c.name) : ["first", "hidden", "last"],
     rows: existingRows,
     column_types: resultColumnTypes,
   });
@@ -71,13 +74,16 @@ function createEditorWithResult(
     database: computed(() => "app"),
     tableMeta: computed(() => ({
       tableName: "people",
-      columns: tableColumns ?? [
+      columns: (tableColumns ?? [
         { name: "first", data_type: "varchar" },
         { name: "hidden", data_type: "varchar" },
         { name: "last", data_type: "varchar" },
-      ],
-      primaryKeys: [],
+      ]) as any,
+      primaryKeys: (tableColumns ?? []).filter((c: any) => c.is_primary_key).map((c) => c.name),
     })),
+    initialEditColumn,
+    indexes: computed(() => indexes),
+    columnIndexMap: computed(() => columnIndexMap),
     sourceColumns: computed(() => sourceColumns),
     readonlyColumnIndexes: computed(() => (readonlyColumnIndexes ? new Set(readonlyColumnIndexes) : undefined)),
     onExecuteSql: computed(() => undefined),
@@ -1416,6 +1422,148 @@ describe("useDataGridEditor appendPastedRowsToNewRow", () => {
       { anchorId: 1, position: "below" },
       { anchorId: 0, position: "below" },
     ]);
+  });
+
+  it("clears auto-increment and generated primary keys when cloning a row", async () => {
+    const editor = createEditor(
+      undefined,
+      true,
+      undefined,
+      undefined,
+      [[1, "Alice", "Smith"]],
+      undefined,
+      [{ name: "first", data_type: "INTEGER", extra: "auto_increment", is_primary_key: true } as any, { name: "hidden", data_type: "varchar" }, { name: "last", data_type: "varchar" }],
+      false,
+      false,
+      ref(true),
+      undefined,
+      "mysql",
+    );
+    editor.newRows.value = [];
+    editor.newRowMeta.value = [];
+
+    editor.cloneRow(0);
+    await nextTick();
+
+    expect(editor.newRows.value[0]).toEqual([null, "Alice", "Smith"]);
+    expect(editor.editingCell.value).toBeNull();
+  });
+
+  it("clears SQLite integer primary keys when cloning a row", async () => {
+    const editor = createEditor(
+      undefined,
+      true,
+      undefined,
+      undefined,
+      [[42, "Bob", "Jones"]],
+      undefined,
+      [{ name: "first", data_type: "INTEGER", extra: "autoincrement", is_primary_key: true } as any, { name: "hidden", data_type: "varchar" }, { name: "last", data_type: "varchar" }],
+      false,
+      false,
+      ref(true),
+      undefined,
+      "sqlite",
+    );
+    editor.newRows.value = [];
+    editor.newRowMeta.value = [];
+
+    editor.cloneRow(0);
+    await nextTick();
+
+    expect(editor.newRows.value[0]).toEqual([null, "Bob", "Jones"]);
+    expect(editor.editingCell.value).toBeNull();
+  });
+
+  it("clears unique index columns and does not start editing when cloning a row", async () => {
+    const editor = createEditor(
+      undefined,
+      true,
+      undefined,
+      undefined,
+      [[1, "Engineering", "ENG"]],
+      undefined,
+      [{ name: "id", data_type: "INTEGER", extra: "auto_increment", is_primary_key: true } as any, { name: "dept_name", data_type: "text", is_unique: true } as any, { name: "code", data_type: "text" } as any],
+      false,
+      false,
+      ref(true),
+      undefined,
+      "mysql",
+      [
+        {
+          name: "idx_code_unique",
+          columns: ["code"],
+          is_unique: true,
+          is_primary: false,
+        } as any,
+      ],
+    );
+    editor.newRows.value = [];
+    editor.newRowMeta.value = [];
+
+    editor.cloneRow(0);
+    await nextTick();
+
+    expect(editor.newRows.value[0]).toEqual([null, null, null]);
+    expect(editor.editingCell.value).toBeNull();
+  });
+
+  it("clears unique columns and preserves non-unique columns when cloning a row", async () => {
+    const editor = createEditor(
+      undefined,
+      true,
+      undefined,
+      undefined,
+      [["UUID-001", "Alice", "Sales"]],
+      undefined,
+      [{ name: "id", data_type: "varchar", is_unique: true } as any, { name: "name", data_type: "varchar" }, { name: "department", data_type: "varchar" }],
+      false,
+      false,
+      ref(true),
+      undefined,
+      "postgres",
+    );
+    editor.newRows.value = [];
+    editor.newRowMeta.value = [];
+
+    editor.cloneRow(0);
+    await nextTick();
+
+    expect(editor.newRows.value[0]).toEqual([null, "Alice", "Sales"]);
+    expect(editor.editingCell.value).toBeNull();
+  });
+
+  it("does not start editing any cell when cloning a row even if initialEditColumn points to an editable column", async () => {
+    const editor = createEditor(
+      undefined,
+      true,
+      undefined,
+      undefined,
+      [[1, "Electronics", "DIGITAL", "Desc", 1]],
+      undefined,
+      [
+        { name: "id", data_type: "INTEGER", extra: "auto_increment", is_primary_key: true } as any,
+        { name: "category_name", data_type: "text" } as any,
+        { name: "category_code", data_type: "text", is_unique: true } as any,
+        { name: "description", data_type: "text" } as any,
+        { name: "sort_order", data_type: "INTEGER" } as any,
+      ],
+      false,
+      false,
+      ref(true),
+      undefined,
+      "mysql",
+      undefined,
+      undefined,
+      computed(() => 1),
+    );
+    editor.newRows.value = [];
+    editor.newRowMeta.value = [];
+
+    editor.cloneRow(0);
+    await nextTick();
+
+    expect(editor.newRows.value[0]).toEqual([null, "Electronics", null, "Desc", 1]);
+    expect(editor.editingCell.value).toBeNull();
   });
 });
 

@@ -81,8 +81,8 @@ export interface UseDataGridLargeValuesOptions {
   translateBackendError: (error: unknown) => string;
   appendDebugLog: (level: "info" | "warn" | "error", message: string, payload?: unknown) => void;
   toast: (message: string, duration?: number) => void;
-  cloneRow: (rowId: number, resolved?: Map<number, CellValue>) => void;
-  cloneRows: (rowIds: number[], resolved: Map<number, Map<number, CellValue>>) => void;
+  cloneRow: (rowId: number, resolved?: Map<number, CellValue>) => number | undefined;
+  cloneRows: (rowIds: number[], resolved: Map<number, Map<number, CellValue>>) => number[];
 }
 
 type ResolvedLargeValueCells = Map<number, Map<number, CellValue>>;
@@ -651,27 +651,29 @@ export function useDataGridLargeValues(options: UseDataGridLargeValuesOptions) {
     options.toast(options.translate("grid.largeValueLoadFailedWithMessage", { message: options.translateBackendError(error) }), 5000);
   }
 
-  async function cloneRow(rowId: number) {
+  async function cloneRow(rowId: number): Promise<number | undefined> {
     try {
       const resolved = await resolveLargeValueCells(
         [rowId],
         options.result.value.columns.map((_, index) => index),
       );
-      options.cloneRow(rowId, resolved.get(rowId));
+      return options.cloneRow(rowId, resolved.get(rowId));
     } catch (error) {
       reportLargeValueLoadError(error);
+      return undefined;
     }
   }
 
-  async function cloneRows(rowIds: number[]) {
+  async function cloneRows(rowIds: number[]): Promise<number[]> {
     try {
       const resolved = await resolveLargeValueCells(
         rowIds,
         options.result.value.columns.map((_, index) => index),
       );
-      options.cloneRows(rowIds, resolved);
+      return options.cloneRows(rowIds, resolved);
     } catch (error) {
       reportLargeValueLoadError(error);
+      return [];
     }
   }
 

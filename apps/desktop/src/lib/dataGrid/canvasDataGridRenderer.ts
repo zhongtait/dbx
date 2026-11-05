@@ -715,9 +715,10 @@ export function drawCanvasDataGrid(options: DrawCanvasDataGridOptions): boolean 
       ctx.rect(clippedX, y, Math.min(cellPaintWidth, width - clippedX), CANVAS_DATA_GRID_ROW_HEIGHT);
       ctx.clip();
       const value = item.data[actualColIdx];
+      const placeholder = value === null ? newRowCellPlaceholder?.(item, actualColIdx) : null;
       const isNullCell = isNullValue?.(value) ?? value === null;
       const isBooleanCell = columnIsBoolean?.(actualColIdx) === true && isBooleanCellValue(value);
-      const isRightAlign = columnAligns?.[visibleColIdx] === "right";
+      const isRightAlign = columnAligns?.[visibleColIdx] === "right" && !placeholder;
       const isEditingThisCell = editingCell?.rowId === item.id && editingCell.col === actualColIdx;
       const isBooleanNullCell = booleanDisplayMode === "checkbox" && isBooleanCell && value === null && !isEditingThisCell;
       const shouldRenderBooleanCheckbox = booleanDisplayMode === "checkbox" && isBooleanCell && value !== null && !isEditingThisCell;
@@ -755,7 +756,7 @@ export function drawCanvasDataGrid(options: DrawCanvasDataGridOptions): boolean 
           ctx.stroke();
         }
       } else {
-        const rawDisplayText = (value === null ? newRowCellPlaceholder?.(item, actualColIdx) : null) ?? formatCell(value, actualColIdx, item);
+        const rawDisplayText = placeholder ?? formatCell(value, actualColIdx, item);
         const displayText = isEditingThisCell ? "" : gridCellDisplayValue(rawDisplayText, flatteningMultiLineEnabled, showWhitespace && value !== null);
         const text = isEditingThisCell ? displayText : fitCanvasText(ctx, displayText, cellMaxWidth, isBooleanNullCell ? "left" : isRightAlign ? "right" : "left");
         const anchorX = isBooleanNullCell ? alignCanvasPixel(drawX + colWidth / 2, scaleX) : textAnchorX;
