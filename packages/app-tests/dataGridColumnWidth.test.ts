@@ -56,3 +56,30 @@ test("data grid caps pathological field names independently of density", () => {
 
   expect(width).toBe(DATA_GRID_HEADER_MAX_WIDTH);
 });
+
+test("data grid column width accommodates placeholder when values are short", () => {
+  const widthWithoutPlaceholder = calculateDataGridColumnWidth({
+    columnName: "id",
+    sampleValues: [1, 2, 3],
+  });
+
+  const widthWithPlaceholder = calculateDataGridColumnWidth({
+    columnName: "id",
+    sampleValues: [1, 2, 3],
+    placeholder: "<generated>",
+  });
+
+  expect(widthWithPlaceholder).toBeGreaterThan(widthWithoutPlaceholder);
+  // <generated> is 11 chars. At 8px/char + 24px padding + 12px slack = 124px.
+  expect(widthWithPlaceholder).toBe(124);
+});
+
+test("data grid column width does not shrink wider columns for a shorter placeholder", () => {
+  const width = calculateDataGridColumnWidth({
+    columnName: "long_column_identifier_name",
+    sampleValues: ["a_very_long_sample_value_that_exceeds_placeholder"],
+    placeholder: "<generated>",
+  });
+
+  expect(width).toBeGreaterThan(124);
+});

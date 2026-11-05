@@ -84,6 +84,7 @@ export interface DataGridTableMetadataLoaderOptions {
 
 export function useDataGridTableMetadataLoaders(options: DataGridTableMetadataLoaderOptions) {
   const { props, state } = options;
+  let indexesRequest: { identity: string; promise: Promise<void> } | undefined;
 
   const defaultSchema = () => {
     if (isSchemaAware(options.resolvedDatabaseType.value)) {
@@ -226,9 +227,13 @@ export function useDataGridTableMetadataLoaders(options: DataGridTableMetadataLo
   async function fetchIndexes() {
     const request = tableRequest();
     const requestIdentity = currentTableIdentity("indexes");
-    if (!request || !requestIdentity || !options.canShowTableIndexes.value || state.indexesLoaded.value || state.indexesLoading.value) return;
+    if (!request || !requestIdentity || !options.canShowTableIndexes.value || state.indexesLoaded.value) return;
+    if (state.indexesLoading.value && indexesRequest?.identity === requestIdentity) {
+      await indexesRequest.promise;
+      return;
+    }
     const requestGeneration = ++state.indexesRequestGeneration.value;
-    await runMetadataRequest({
+    const promise = runMetadataRequest({
       loading: state.indexesLoading,
       error: state.indexesError,
       requestGeneration,
@@ -246,6 +251,13 @@ export function useDataGridTableMetadataLoaders(options: DataGridTableMetadataLo
         state.indexesLoaded.value = true;
       },
     });
+    const activeRequest = { identity: requestIdentity, promise };
+    indexesRequest = activeRequest;
+    try {
+      await promise;
+    } finally {
+      if (indexesRequest === activeRequest) indexesRequest = undefined;
+    }
   }
 
   async function reloadIndexes() {
