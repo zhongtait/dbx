@@ -100,6 +100,7 @@ export function calculateDataGridColumnWidth(options: {
   columnName: string;
   sampleValues: readonly CellValue[];
   maxWidth?: number;
+  placeholder?: string | null;
   valueTextLimit?: number;
   density?: ColumnWidthDensity;
   compactColumnHeaderActions?: boolean;
@@ -117,9 +118,11 @@ export function calculateDataGridColumnWidth(options: {
   const indexIndicatorWidth = options.hasIndexIndicator ? DATA_GRID_HEADER_INDEX_INDICATOR_WIDTH : 0;
   const headerWidth = Math.min(DATA_GRID_HEADER_MAX_WIDTH, headerTextWidth + headerControl + indexIndicatorWidth);
 
+  const placeholderWidth = options.placeholder ? Math.min(maxAllowedWidth, Math.min(options.placeholder.length, valueTextLimit) * preset.charWidth + preset.cellPadding + DATA_GRID_VALUE_WIDTH_SLACK) : 0;
+
   // Density limits cell content, never the column name and its header controls.
   if (density === "compact" && !options.includeValues) {
-    return Math.max(DATA_GRID_COL_MIN_WIDTH, Math.round(headerWidth));
+    return Math.max(DATA_GRID_COL_MIN_WIDTH, Math.round(Math.max(headerWidth, placeholderWidth)));
   }
 
   const valueWidths: number[] = [];
@@ -131,7 +134,7 @@ export function calculateDataGridColumnWidth(options: {
   }
 
   const valueWidth = percentileValue(valueWidths, preset.valueWidthPercentile);
-  const maxContentWidth = Math.max(headerWidth, Math.min(maxAllowedWidth, valueWidth));
+  const maxContentWidth = Math.max(headerWidth, Math.min(maxAllowedWidth, valueWidth), placeholderWidth);
 
   return Math.max(DATA_GRID_COL_MIN_WIDTH, Math.round(maxContentWidth));
 }

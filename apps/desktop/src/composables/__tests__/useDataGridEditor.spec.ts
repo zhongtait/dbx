@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { computed, createApp, nextTick, ref, type Ref } from "vue";
+import { computed, createApp, nextTick, ref, type ComputedRef, type Ref } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearDataGridPendingSnapshot, dataGridPendingChangesState, DATA_GRID_QUICK_ENTRY_DRAFT_ROW_ID, useDataGridEditor, type CustomSaveHandler } from "@/composables/useDataGridEditor";
 import { clearDataGridClipboardCopy, parseDataGridClipboard, rememberDataGridClipboardCopy } from "@/lib/dataGrid/dataGridClipboard";
@@ -48,16 +48,18 @@ function createEditorWithResult(
   readonlyColumnIndexes?: number[],
   existingRows: CellValue[][] = [],
   onCellValueChanged?: (rowId: number, columnIndex: number) => void,
-  tableColumns?: Array<{ name: string; data_type: string; extra?: string; column_default?: string }>,
+  tableColumns?: Array<{ name: string; data_type: string; extra?: string; column_default?: string; is_primary_key?: boolean; is_unique?: boolean }>,
   mongoCollectionGrid = false,
   quickEntry = false,
   editable = ref(true),
   resultColumnTypes?: string[],
   databaseType: import("@/types/database").DatabaseType = "postgres",
+  indexes?: import("@/types/database").IndexInfo[],
+  initialEditColumn?: ComputedRef<number>,
 ) {
   let editor: ReturnType<typeof useDataGridEditor>;
   const result = ref<{ columns: string[]; rows: CellValue[][]; column_types?: string[] }>({
-    columns: ["first", "hidden", "last"],
+    columns: tableColumns ? tableColumns.map((c) => c.name) : ["first", "hidden", "last"],
     rows: existingRows,
     column_types: resultColumnTypes,
   });
@@ -71,13 +73,15 @@ function createEditorWithResult(
     database: computed(() => "app"),
     tableMeta: computed(() => ({
       tableName: "people",
-      columns: tableColumns ?? [
+      columns: (tableColumns ?? [
         { name: "first", data_type: "varchar" },
         { name: "hidden", data_type: "varchar" },
         { name: "last", data_type: "varchar" },
-      ],
-      primaryKeys: [],
+      ]) as any,
+      primaryKeys: (tableColumns ?? []).filter((c: any) => c.is_primary_key).map((c) => c.name),
     })),
+    initialEditColumn,
+    indexes: computed(() => indexes),
     sourceColumns: computed(() => sourceColumns),
     readonlyColumnIndexes: computed(() => (readonlyColumnIndexes ? new Set(readonlyColumnIndexes) : undefined)),
     onExecuteSql: computed(() => undefined),
@@ -1483,6 +1487,218 @@ describe("useDataGridEditor appendPastedRowsToNewRow", () => {
       { anchorId: 0, position: "below" },
     ]);
   });
+
+  it("clears auto-increment and generated primary keys when cloning a row", async () => {
+    const editor = createEditor(
+      undefined,
+      true,
+      undefined,
+      undefined,
+      [[1, "Alice", "Smith"]],
+      undefined,
+      [{ name: "first", data_type: "INTEGER", extra: "auto_increment", is_primary_key: true } as any, { name: "hidden", data_type: "varchar" }, { name: "last", data_type: "varchar" }],
+      false,
+      false,
+      ref(true),
+      undefined,
+      "mysql",
+    );
+    editor.newRows.value = [];
+    editor.newRowMeta.value = [];
+
+    editor.cloneRow(0);
+    await nextTick();
+
+    expect(editor.newRows.value[0]).toEqual([null, "Alice", "Smith"]);
+    expect(editor.editingCell.value).toBeNull();
+  });
+
+  it("clears SQLite integer primary keys when cloning a row", async () => {
+    const editor = createEditor(
+      undefined,
+      true,
+      undefined,
+      undefined,
+      [[42, "Bob", "Jones"]],
+      undefined,
+      [{ name: "first", data_type: "INTEGER", extra: "autoincrement", is_primary_key: true } as any, { name: "hidden", data_type: "varchar" }, { name: "last", data_type: "varchar" }],
+      false,
+      false,
+      ref(true),
+      undefined,
+      "sqlite",
+    );
+    editor.newRows.value = [];
+    editor.newRowMeta.value = [];
+
+    editor.cloneRow(0);
+    await nextTick();
+
+    expect(editor.newRows.value[0]).toEqual([null, "Bob", "Jones"]);
+    expect(editor.editingCell.value).toBeNull();
+  });
+
+  it("clears unique index columns and does not start editing when cloning a row", async () => {
+    const editor = createEditor(
+      undefined,
+      true,
+      undefined,
+      undefined,
+      [[1, "Engineering", "ENG"]],
+      undefined,
+      [{ name: "id", data_type: "INTEGER", extra: "auto_increment", is_primary_key: true } as any, { name: "dept_name", data_type: "text", is_unique: true } as any, { name: "code", data_type: "text" } as any],
+      false,
+      false,
+      ref(true),
+      undefined,
+      "mysql",
+      [
+        {
+          name: "idx_code_unique",
+          columns: ["code"],
+          is_unique: true,
+          is_primary: false,
+        } as any,
+      ],
+    );
+    editor.newRows.value = [];
+    editor.newRowMeta.value = [];
+
+    editor.cloneRow(0);
+    await nextTick();
+
+    expect(editor.newRows.value[0]).toEqual([null, null, null]);
+    expect(editor.editingCell.value).toBeNull();
+  });
+
+  it("clears unique columns and preserves non-unique columns when cloning a row", async () => {
+    const editor = createEditor(
+      undefined,
+      true,
+      undefined,
+      undefined,
+      [["UUID-001", "Alice", "Sales"]],
+      undefined,
+      [{ name: "id", data_type: "varchar", is_unique: true } as any, { name: "name", data_type: "varchar" }, { name: "department", data_type: "varchar" }],
+      false,
+      false,
+      ref(true),
+      undefined,
+      "postgres",
+    );
+    editor.newRows.value = [];
+    editor.newRowMeta.value = [];
+
+    editor.cloneRow(0);
+    await nextTick();
+
+    expect(editor.newRows.value[0]).toEqual([null, "Alice", "Sales"]);
+    expect(editor.editingCell.value).toBeNull();
+  });
+
+  it.each(["code", "CODE"])("preserves the case-distinct column when %s has a unique index", (uniqueColumn) => {
+    const editor = createEditor(
+      undefined,
+      true,
+      undefined,
+      undefined,
+      [[1, "lower value", "upper value"]],
+      undefined,
+      [
+        { name: "id", data_type: "integer", extra: "identity", is_primary_key: true },
+        { name: "code", data_type: "text" },
+        { name: "CODE", data_type: "text" },
+      ],
+      false,
+      false,
+      ref(true),
+      undefined,
+      "postgres",
+      [{ name: "unique_code", columns: [uniqueColumn], is_unique: true, is_primary: false } as any],
+    );
+    editor.newRows.value = [];
+
+    editor.cloneRow(0);
+
+    expect(editor.newRows.value[0]).toEqual(uniqueColumn === "code" ? [null, null, "upper value"] : [null, "lower value", null]);
+  });
+
+  it.each(["code", "CODE"])("uses exact column metadata for a unique %s column", (uniqueColumn) => {
+    const editor = createEditor(
+      undefined,
+      true,
+      undefined,
+      undefined,
+      [["lower value", "upper value"]],
+      undefined,
+      ["code", "CODE"].map((name) => ({ name, data_type: "text", is_unique: name === uniqueColumn })),
+    );
+    editor.newRows.value = [];
+
+    editor.cloneRow(0);
+
+    expect(editor.newRows.value[0]).toEqual(uniqueColumn === "code" ? [null, "upper value"] : ["lower value", null]);
+  });
+
+  it("still resolves unambiguous case differences in source and index metadata", () => {
+    const editor = createEditor(
+      ["ID", "CODE", "LABEL"],
+      true,
+      undefined,
+      undefined,
+      [[1, "unique value", "preserved"]],
+      undefined,
+      [
+        { name: "id", data_type: "int", extra: "auto_increment", is_primary_key: true },
+        { name: "code", data_type: "text" },
+        { name: "label", data_type: "text" },
+      ],
+      false,
+      false,
+      ref(true),
+      undefined,
+      "mysql",
+      [{ name: "unique_code", columns: ["CODE"], is_unique: true, is_primary: false } as any],
+    );
+    editor.newRows.value = [];
+
+    editor.cloneRows([0]);
+
+    expect(editor.newRows.value).toEqual([[null, null, "preserved"]]);
+  });
+
+  it("does not start editing any cell when cloning a row even if initialEditColumn points to an editable column", async () => {
+    const editor = createEditor(
+      undefined,
+      true,
+      undefined,
+      undefined,
+      [[1, "Electronics", "DIGITAL", "Desc", 1]],
+      undefined,
+      [
+        { name: "id", data_type: "INTEGER", extra: "auto_increment", is_primary_key: true } as any,
+        { name: "category_name", data_type: "text" } as any,
+        { name: "category_code", data_type: "text", is_unique: true } as any,
+        { name: "description", data_type: "text" } as any,
+        { name: "sort_order", data_type: "INTEGER" } as any,
+      ],
+      false,
+      false,
+      ref(true),
+      undefined,
+      "mysql",
+      undefined,
+      computed(() => 1),
+    );
+    editor.newRows.value = [];
+    editor.newRowMeta.value = [];
+
+    editor.cloneRow(0);
+    await nextTick();
+
+    expect(editor.newRows.value[0]).toEqual([null, "Electronics", null, "Desc", 1]);
+    expect(editor.editingCell.value).toBeNull();
+  });
 });
 
 describe("useDataGridEditor saveChanges reload", () => {
@@ -1496,6 +1712,45 @@ describe("useDataGridEditor saveChanges reload", () => {
     mocks.executeQuery.mockReset();
     mocks.addHistory.mockReset();
     mocks.getConfig.mockReset();
+  });
+
+  it.each([false, true])("saves a fully cleared clone as a default row (alongside update: %s)", async (alongsideUpdate) => {
+    const editor = createEditor(
+      undefined,
+      true,
+      undefined,
+      undefined,
+      [[1, "one"]],
+      undefined,
+      [
+        { name: "id", data_type: "INTEGER", extra: "autoincrement", is_primary_key: true },
+        { name: "code", data_type: "text" },
+      ],
+      false,
+      false,
+      ref(true),
+      undefined,
+      "sqlite",
+      [{ name: "unique_code", columns: ["code"], is_unique: true, is_primary: false } as any],
+    );
+    editor.newRows.value = [];
+    editor.newRowMeta.value = [];
+    editor.cloneRow(0);
+    expect(editor.newRows.value).toEqual([[null, null]]);
+    if (alongsideUpdate) editor.applyCellValue(0, 1, "changed");
+
+    const statements = [...(alongsideUpdate ? ['UPDATE "people" SET "code" = \'changed\' WHERE "id" = 1;'] : []), 'INSERT INTO "people" DEFAULT VALUES;'];
+    mocks.prepareDataGridSave.mockResolvedValue({ statements, rollbackStatements: [] });
+    const execute = alongsideUpdate ? mocks.executeInTransaction : mocks.executeBatch;
+    execute.mockRejectedValueOnce(new Error("save failed"));
+    await editor.saveChanges();
+    expect(mocks.prepareDataGridSave.mock.calls.at(-1)?.[0].newRows).toEqual([[null, null]]);
+    expect(editor.newRows.value).toEqual([[null, null]]);
+
+    execute.mockResolvedValue({ success: true, affected_rows: statements.length, execution_time_ms: 1 });
+    await editor.saveChanges();
+    expect(execute.mock.calls.at(-1)?.[2]).toEqual(statements);
+    expect(editor.newRows.value).toEqual([]);
   });
 
   function createSaveTestEditor(

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { Check, ChevronDown, Copy, Eye, Loader2, Map, Plus, RefreshCcw, RotateCcw, Rows3, Save, TableProperties, Trash2, Upload } from "@lucide/vue";
+import { Check, ChevronDown, Copy, Eye, Loader2, Map, Plus, RefreshCcw, RotateCcw, Rows3, Save, TableProperties, Trash2, Undo2, Upload } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -34,6 +34,7 @@ const props = defineProps<{
   autoRefresh?: DataGridToolbarAutoRefreshCapability;
   addRow?: DataGridToolbarAddRowCapability;
   deleteRow?: DataGridToolbarActionCapability;
+  undo?: DataGridToolbarActionCapability;
   copyData?: DataGridToolbarCopyCapability;
   exportData?: DataGridToolbarExportCapability;
   transpose?: DataGridToolbarActionCapability;
@@ -64,6 +65,7 @@ const visibleActionOrder = computed<DataGridToolbarActionKey[]>(() => {
     copyData: isDataGridToolbarCapabilityVisible(props.copyData),
     addRow: isDataGridToolbarCapabilityVisible(props.addRow),
     deleteRow: isDataGridToolbarCapabilityVisible(props.deleteRow),
+    undo: isDataGridToolbarCapabilityVisible(props.undo),
     exportData: isDataGridToolbarCapabilityVisible(props.exportData),
     transpose: isDataGridToolbarCapabilityVisible(props.transpose),
     tableInfo: isDataGridToolbarCapabilityVisible(props.tableInfo),
@@ -213,6 +215,15 @@ function actionLabelClass(action: DataGridToolbarActionKey) {
       <TooltipContent side="bottom">{{ deleteRow?.tooltip ?? deleteRow?.label }}</TooltipContent>
     </Tooltip>
 
+    <Tooltip v-if="isDataGridToolbarCapabilityVisible(undo)">
+      <TooltipTrigger as-child>
+        <Button data-toolbar-action="undo" :aria-label="undo?.label" variant="ghost" size="sm" :class="actionButtonClass('undo')" :disabled="isDataGridToolbarCapabilityDisabled(undo)" @click="void triggerDataGridToolbarAction(undo)">
+          <Undo2 class="data-grid-topbar-action-icon h-3 w-3" />
+          <span class="data-grid-topbar-action-label" :class="actionLabelClass('undo')">{{ undo?.label }}</span>
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">{{ undo?.tooltip ?? undo?.label }}</TooltipContent>
+    </Tooltip>
     <DropdownMenu v-if="isDataGridToolbarCapabilityVisible(exportData)">
       <Tooltip>
         <TooltipTrigger as-child>

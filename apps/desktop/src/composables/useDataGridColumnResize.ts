@@ -46,6 +46,7 @@ export interface UseDataGridColumnResizeOptions {
   rowNumberWidth?: Ref<number> | ComputedRef<number>;
   viewportWidth?: Ref<number> | ComputedRef<number>;
   displayValue?: (value: CellValue, columnIndex: number) => CellValue;
+  columnPlaceholder?: (columnIndex: number) => string | null;
 }
 
 export function useDataGridColumnResize(options: UseDataGridColumnResizeOptions) {
@@ -84,6 +85,7 @@ export function useDataGridColumnResize(options: UseDataGridColumnResizeOptions)
   function neededColumnWidth(colIdx: number): number {
     const colName = columns.value[colIdx];
     if (!colName) return DATA_GRID_COL_MIN_WIDTH;
+    const actualColIdx = columnIndexes.value[colIdx];
     return calculateDataGridColumnWidth({
       columnName: colName,
       sampleValues: sampleColumnValues(colIdx),
@@ -91,6 +93,7 @@ export function useDataGridColumnResize(options: UseDataGridColumnResizeOptions)
       compactColumnHeaderActions: compactColumnHeaderActions.value,
       headerTextWidth: measureHeaderText?.(colName),
       hasIndexIndicator: options.columnIndexIndicators?.value[colIdx] ?? false,
+      placeholder: actualColIdx !== undefined ? options.columnPlaceholder?.(actualColIdx) : undefined,
     });
   }
 
@@ -237,6 +240,7 @@ export function useDataGridColumnResize(options: UseDataGridColumnResizeOptions)
   function autoFitColumnWidth(colIdx: number): number | undefined {
     const colName = columns.value[colIdx];
     if (!colName) return undefined;
+    const actualColIdx = columnIndexes.value[colIdx];
     return calculateDataGridColumnWidth({
       columnName: colName,
       sampleValues: sampleColumnValues(colIdx),
@@ -247,6 +251,7 @@ export function useDataGridColumnResize(options: UseDataGridColumnResizeOptions)
       includeValues: true,
       headerTextWidth: measureHeaderText?.(colName),
       hasIndexIndicator: options.columnIndexIndicators?.value[colIdx] ?? false,
+      placeholder: actualColIdx !== undefined ? options.columnPlaceholder?.(actualColIdx) : undefined,
     });
   }
 

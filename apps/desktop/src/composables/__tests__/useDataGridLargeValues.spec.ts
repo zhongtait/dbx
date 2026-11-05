@@ -48,6 +48,8 @@ function mountLargeValues(databaseType: DatabaseType, result: Ref<QueryResult>, 
   const config = ref({ id: `${databaseType}-1`, name: "Test", db_type: databaseType, host: "original", url_params: settings.legacy ? "dataCharset=GBK" : undefined } as ConnectionConfig);
   const runtimeScope = createDataGridRuntimeScope();
   const toast = vi.fn();
+  const cloneRow = vi.fn();
+  const cloneRows = vi.fn();
   const formatCell = (value: unknown, columnIndex?: number, originalBytes?: number) => binaryCellDisplayText(value, result.value.column_types?.[columnIndex ?? 0], originalBytes, databaseType) ?? String(value ?? "");
   const item = (rowId = 1) => ({ id: rowId, sourceIndex: rowId - 1, data: result.value.rows[rowId - 1]!, isNew: false, isDeleted: false, isDirtyCol: [false, false] });
   let largeValues: ReturnType<typeof useDataGridLargeValues> | undefined;
@@ -93,8 +95,8 @@ function mountLargeValues(databaseType: DatabaseType, result: Ref<QueryResult>, 
           translateBackendError: (error) => String(error),
           appendDebugLog: vi.fn(),
           toast,
-          cloneRow: vi.fn(),
-          cloneRows: vi.fn(),
+          cloneRow,
+          cloneRows,
         });
         if (withEditor)
           editor = useDataGridEditor({
@@ -135,7 +137,7 @@ function mountLargeValues(databaseType: DatabaseType, result: Ref<QueryResult>, 
     app.unmount();
   });
   if (!largeValues) throw new Error("useDataGridLargeValues was not mounted");
-  return { largeValues, toast, item, editor, runtimeScope, config };
+  return { largeValues, toast, item, editor, runtimeScope, config, cloneRow, cloneRows };
 }
 
 function previewResult(columnType = "bytea", value = "\\x00017f80ff...", originalBytes = 9645) {
@@ -150,6 +152,19 @@ function previewResult(columnType = "bytea", value = "\\x00017f80ff...", origina
 }
 
 describe("useDataGridLargeValues", () => {
+  it.each([false, true])("cancels cloning if the caller changes while resolving values (multiple: %s)", async (multiple) => {
+    const result = previewResult();
+    result.value.large_value_cells = [];
+    const { largeValues, cloneRow, cloneRows } = mountLargeValues("postgres", result);
+    let current = true;
+    const pending = multiple ? largeValues.cloneRows([1], () => current) : largeValues.cloneRow(1, () => current);
+    current = false;
+
+    expect(await pending).toEqual(multiple ? [] : undefined);
+    expect(cloneRow).not.toHaveBeenCalled();
+    expect(cloneRows).not.toHaveBeenCalled();
+  });
+
   it.each(["metadata", "target"] as const)("uses target identity rather than incidental connection fields for legacy exports (%s)", async (change) => {
     const result = previewResult();
     const { largeValues, config } = mountLargeValues("postgres", result);

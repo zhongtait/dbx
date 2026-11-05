@@ -400,7 +400,7 @@ test("cloning a row copies non-generated primary key values without executing sa
   assert.equal(saveCalls, 0);
   assert.deepEqual(editor.newRows.value, [["AFW", 1995, 35271.907090628745]]);
   assert.equal(editor.transactionActive.value, true);
-  assert.deepEqual(editor.editingCell.value, { rowId: -1, col: 0 });
+  assert.equal(editor.editingCell.value, null);
 
   await editor.saveChanges();
 

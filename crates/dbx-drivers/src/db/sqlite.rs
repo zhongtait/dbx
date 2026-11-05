@@ -1562,6 +1562,17 @@ pub async fn list_tables(pool: &SqliteHandle, schema: &str) -> Result<Vec<TableI
 pub async fn get_columns(pool: &SqliteHandle, schema: &str, table: &str) -> Result<Vec<ColumnInfo>, String> {
     if pool.is_remote() {
         let schema = remote_schema_name(schema);
+        let create_sql_query = format!(
+            "SELECT sql FROM {}.sqlite_master WHERE type = 'table' AND name = {}",
+            sqlite_quote_ident(&schema),
+            sqlite_quote_string(table),
+        );
+        let autoincrement_columns = query_remote_rows(pool, &create_sql_query)
+            .await
+            .ok()
+            .and_then(|rows| rows.into_iter().next())
+            .map(|row| parse_sqlite_autoincrement_pk_columns(&json_cell_text(&row, 0)))
+            .unwrap_or_default();
         let sql = format!("PRAGMA {}.table_info({})", sqlite_quote_ident(&schema), sqlite_quote_string(table));
         return Ok(query_remote_rows(pool, &sql)
             .await?
@@ -1569,6 +1580,11 @@ pub async fn get_columns(pool: &SqliteHandle, schema: &str, table: &str) -> Resu
             .map(|row| {
                 let name = json_cell_text(&row, 1);
                 let is_pk = json_cell_i32(&row, 5) > 0;
+                let extra = if is_pk && autoincrement_columns.contains(&name.to_ascii_lowercase()) {
+                    Some("autoincrement".to_string())
+                } else {
+                    None
+                };
                 ColumnInfo {
                     name,
                     data_type: json_cell_text(&row, 2),
@@ -1582,7 +1598,7 @@ pub async fn get_columns(pool: &SqliteHandle, schema: &str, table: &str) -> Resu
                         }
                     },
                     is_primary_key: is_pk,
-                    extra: None,
+                    extra,
                     comment: None,
                     numeric_precision: None,
                     numeric_scale: None,
@@ -1954,8 +1970,8 @@ fn sqlite_autoincrement_pk_columns(conn: &Connection, schema: &str, table: &str)
 /// - The column's declared type, after case-insensitive normalization, is exactly
 ///   `INTEGER` (NOT `INT`, `BIGINT`, `SMALLINT`, etc.).
 /// - The column is the (only) primary key, declared either inline (`PRIMARY KEY`,
-///   optionally with `AUTOINCREMENT`) or via a single-column table-level
-///   `PRIMARY KEY (col)` constraint.
+///   except the historical inline `PRIMARY KEY DESC` case, optionally with
+///   `AUTOINCREMENT`) or via a single-column table-level `PRIMARY KEY (col)` constraint.
 ///
 /// On any parse failure (malformed SQL, unrecognized syntax) the function returns
 /// an empty set rather than panicking — callers fall back to the conservative
@@ -2008,7 +2024,7 @@ fn parse_sqlite_autoincrement_pk_columns(create_sql: &str) -> HashSet<String> {
         if column.has_inline_pk {
             inline_pk_count += 1;
             inline_pk_candidate = Some(column.name.clone());
-            if column.is_integer_type {
+            if column.is_integer_type && !column.inline_pk_desc {
                 found.insert(column.name.clone());
             }
         }
@@ -2239,6 +2255,7 @@ struct ColumnDefinition {
     name: String,
     is_integer_type: bool,
     has_inline_pk: bool,
+    inline_pk_desc: bool,
 }
 
 fn parse_column_definition(entry: &str) -> Option<ColumnDefinition> {
@@ -2286,22 +2303,27 @@ fn parse_column_definition(entry: &str) -> Option<ColumnDefinition> {
         }
     }
 
-    let has_inline_pk = tokens_contain_primary_key(&tokens);
+    let (has_inline_pk, inline_pk_desc) = inline_primary_key_flags(&tokens);
 
-    Some(ColumnDefinition { name: name_lower, is_integer_type, has_inline_pk })
+    Some(ColumnDefinition { name: name_lower, is_integer_type, has_inline_pk, inline_pk_desc })
 }
 
-fn tokens_contain_primary_key(tokens: &[Token]) -> bool {
-    for window in tokens.windows(2) {
-        if window[0].kind == TokenKind::Keyword
-            && window[0].value.eq_ignore_ascii_case("primary")
-            && window[1].kind == TokenKind::Keyword
-            && window[1].value.eq_ignore_ascii_case("key")
+fn inline_primary_key_flags(tokens: &[Token]) -> (bool, bool) {
+    let mut has_inline_pk = false;
+    let mut inline_pk_desc = false;
+    for index in 0..tokens.len().saturating_sub(1) {
+        if tokens[index].kind == TokenKind::Keyword
+            && tokens[index].value.eq_ignore_ascii_case("primary")
+            && tokens[index + 1].kind == TokenKind::Keyword
+            && tokens[index + 1].value.eq_ignore_ascii_case("key")
         {
-            return true;
+            has_inline_pk = true;
+            inline_pk_desc |= tokens.get(index + 2).is_some_and(|token| {
+                token.kind == TokenKind::Keyword && token.value.eq_ignore_ascii_case("desc")
+            });
         }
     }
-    false
+    (has_inline_pk, inline_pk_desc)
 }
 
 fn is_table_level_constraint(entry: &str) -> bool {

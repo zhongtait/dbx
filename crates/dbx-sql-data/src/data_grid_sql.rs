@@ -1486,11 +1486,8 @@ fn validate_data_grid_save(options: &DataGridSaveStatementOptions) -> Option<Str
     }
 
     let save_columns = effective_columns(options);
-    let not_null_columns: Vec<String> = options
-        .table_meta
-        .columns
-        .as_deref()
-        .unwrap_or(&[])
+    let column_info = options.table_meta.columns.as_deref().unwrap_or(&[]);
+    let not_null_columns: Vec<String> = column_info
         .iter()
         .filter(|column| {
             !column.is_nullable
@@ -1524,6 +1521,16 @@ fn validate_data_grid_save(options: &DataGridSaveStatementOptions) -> Option<Str
         for row in &options.new_rows {
             for column_index in 0..options.columns.len() {
                 let source_column = save_columns.get(column_index).and_then(|column| column.as_deref());
+                // Validate only columns that the INSERT can write. In particular,
+                // SQL Server rowversion and computed columns are server-generated.
+                if is_grid_insert_omitted_column(
+                    options.database_type,
+                    source_column.and_then(|column| column_info_for(column_info, column)),
+                    source_column,
+                    false,
+                ) {
+                    continue;
+                }
                 if is_null_write_to_not_null_column(
                     options.database_type,
                     &not_null_columns,
@@ -1838,6 +1845,27 @@ struct GuardedPredicate {
     requires_match: bool,
 }
 
+fn grid_insert_pairs<'a>(
+    database_type: Option<DatabaseType>,
+    columns: &'a [Option<String>],
+    row: &'a [Value],
+    column_info: &[DataGridColumnInfo],
+    keep_unset_values: bool,
+) -> Vec<(&'a str, &'a Value)> {
+    columns
+        .iter()
+        .enumerate()
+        .filter_map(|(index, column)| Some((column.as_deref()?, row.get(index).unwrap_or(&Value::Null))))
+        .filter(|(column, value)| {
+            let info = column_info_for(column_info, column);
+            // Empty generated values must be omitted so the database supplies them.
+            (!info.is_some_and(is_auto_generated_column) || !grid_value_is_empty(value))
+                && !is_grid_insert_omitted_column(database_type, info, Some(column), false)
+                && (keep_unset_values || !value.is_null())
+        })
+        .collect()
+}
+
 /// Builds the statements the save executes, and alongside them the server-side
 /// guards for every keyless predicate those statements actually send. The guard
 /// is derived from the same `where_clause` value the UPDATE/DELETE carries, so
@@ -2007,30 +2035,15 @@ fn build_data_grid_save_statements(
             }
             continue;
         }
-        let insert_pairs: Vec<(&str, &Value)> = save_columns
-            .iter()
-            .enumerate()
-            .filter_map(|(index, column)| Some((column.as_deref()?, row.get(index).unwrap_or(&Value::Null))))
-            .filter(|(column, value)| {
-                let column_info = column_info_for(column_info, column);
-                // Empty generated values must be omitted so the database can apply AUTO_INCREMENT/IDENTITY semantics.
-                !column_info.is_some_and(is_auto_generated_column) || !grid_value_is_empty(value)
-            })
-            .filter(|(column, _)| {
-                !is_grid_insert_omitted_column(
-                    options.database_type,
-                    column_info_for(column_info, column),
-                    Some(column),
-                    false,
-                )
-            })
-            .filter(|(_, value)| starrocks || !value.is_null())
-            .collect();
+        let insert_pairs = grid_insert_pairs(options.database_type, &save_columns, row, column_info, starrocks);
         if insert_pairs.is_empty() {
             if options.database_type == Some(DatabaseType::Mysql) {
                 statements
                     .push(data_grid_statement(options.database_type, format!("INSERT INTO {table} () VALUES ()")));
-            } else if options.database_type == Some(DatabaseType::Firebird) {
+            } else if matches!(
+                options.database_type,
+                Some(DatabaseType::Sqlite | DatabaseType::Postgres | DatabaseType::SqlServer | DatabaseType::Firebird)
+            ) {
                 statements
                     .push(data_grid_statement(options.database_type, format!("INSERT INTO {table} DEFAULT VALUES")));
             }
@@ -2133,6 +2146,11 @@ fn build_data_grid_rollback_statements(
         && find_column_index(options.database_type, &save_columns, DBX_ROWID_COLUMN).is_some();
 
     for row in &options.new_rows {
+        // A DEFAULT VALUES insert has no client-known values to identify the
+        // inserted row. An all-NULL predicate could delete unrelated rows.
+        if grid_insert_pairs(options.database_type, &save_columns, row, column_info, false).is_empty() {
+            continue;
+        }
         // Server-generated keys are unknown; never invent an undo predicate from
         // the unset draft values. Reuse the existing key-based rollback guard.
         let where_clause = if matches!(
@@ -13487,6 +13505,76 @@ mod tests {
         );
     }
 
+    fn default_only_clone_options(database_type: DatabaseType, extra: &str) -> DataGridSaveStatementOptions {
+        serde_json::from_value(json!({
+            "databaseType": database_type,
+            "tableMeta": {
+                "tableName": "users", "primaryKeys": ["id"],
+                "columns": [
+                    { "name": "id", "data_type": "integer", "is_primary_key": true, "extra": extra },
+                    { "name": "code", "data_type": "text", "is_nullable": true }
+                ]
+            },
+            "columns": ["id", "code"],
+            "rows": [[1, "one"]],
+            "newRows": [[null, null]]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn prepare_data_grid_save_inserts_default_only_clones() {
+        for (database_type, extra, expected) in [
+            (DatabaseType::Sqlite, "autoincrement", r#"INSERT INTO "users" DEFAULT VALUES;"#),
+            (DatabaseType::Postgres, "serial", r#"INSERT INTO "users" DEFAULT VALUES;"#),
+            (DatabaseType::SqlServer, "identity(1,1)", "INSERT INTO [users] DEFAULT VALUES;"),
+        ] {
+            let mut options = default_only_clone_options(database_type, extra);
+            // A blank generated key is omitted just like a NULL generated key.
+            options.new_rows.push(vec![json!(""), Value::Null]);
+            let prepared = prepare_data_grid_save(options);
+            assert_eq!(prepared.validation_error, None, "{database_type:?}");
+            assert_eq!(prepared.statements, vec![expected, expected], "{database_type:?}");
+            assert!(prepared.rollback_statements.is_empty(), "{database_type:?}");
+        }
+    }
+
+    #[test]
+    fn prepare_data_grid_save_keeps_default_only_clone_alongside_update() {
+        let mut options = default_only_clone_options(DatabaseType::Sqlite, "autoincrement");
+        options.dirty_rows = vec![(0, vec![(1, json!("changed"))])];
+        let prepared = prepare_data_grid_save(options);
+        assert_eq!(prepared.validation_error, None);
+        assert_eq!(
+            prepared.statements,
+            vec![r#"UPDATE "users" SET "code" = 'changed' WHERE "id" = 1;"#, r#"INSERT INTO "users" DEFAULT VALUES;"#,]
+        );
+        assert_eq!(
+            prepared.rollback_statements,
+            vec![r#"UPDATE "users" SET "code" = 'one' WHERE "id" = 1 AND "code" = 'changed';"#]
+        );
+    }
+
+    #[test]
+    fn prepare_data_grid_save_does_not_invent_default_only_keyless_clone_rollback() {
+        let options = serde_json::from_value(json!({
+            "databaseType": "sqlite",
+            "tableMeta": {
+                "tableName": "codes",
+                "columns": [{ "name": "code", "data_type": "text", "is_nullable": true }]
+            },
+            "columns": ["code"],
+            "rows": [[null], ["one"]],
+            "newRows": [[null]]
+        }))
+        .unwrap();
+        let prepared = prepare_data_grid_save(options);
+        assert_eq!(prepared.validation_error, None);
+        assert_eq!(prepared.statements, vec![r#"INSERT INTO "codes" DEFAULT VALUES;"#]);
+        // DELETE WHERE code IS NULL would also delete the pre-existing NULL row.
+        assert!(prepared.rollback_statements.is_empty());
+    }
+
     #[test]
     fn prepare_data_grid_save_omits_empty_mysql_auto_increment_value() {
         let result = prepare_data_grid_save(DataGridSaveStatementOptions {
@@ -13515,6 +13603,66 @@ mod tests {
 
         assert_eq!(result.validation_error, None);
         assert_eq!(result.statements, vec!["INSERT INTO `app`.`users` (`name`) VALUES ('Ada');"]);
+    }
+
+    #[test]
+    fn prepare_data_grid_save_omits_null_sqlserver_generated_columns() {
+        for rowversion_type in ["timestamp", "rowversion"] {
+            let mut options = DataGridSaveStatementOptions {
+                database_type: Some(DatabaseType::SqlServer),
+                identifier_quote: None,
+                server_version: None,
+                table_meta: DataGridTableMeta {
+                    catalog: None,
+                    database: None,
+                    schema: Some("dbo".to_string()),
+                    table_name: "items".to_string(),
+                    primary_keys: vec!["id".to_string()],
+                    columns: Some(vec![
+                        pk_column("id", "int", false, Some("identity(1,1)")),
+                        column("name", "nvarchar(50)", false, None),
+                        column("rv", rowversion_type, false, None),
+                        column("total", "int", false, Some("computed")),
+                    ]),
+                },
+                columns: vec!["id".to_string(), "name".to_string(), "rv".to_string(), "total".to_string()],
+                source_columns: None,
+                rows: vec![vec![json!(1), json!("Ada"), json!("0x0000000000000001"), json!(42)]],
+                dirty_rows: vec![],
+                deleted_rows: vec![],
+                new_rows: vec![vec![Value::Null, json!("Ada"), Value::Null, Value::Null]],
+                include_database_name: false,
+            };
+
+            let result = prepare_data_grid_save(options.clone());
+            assert_eq!(result.validation_error, None);
+            assert_eq!(result.statements, vec!["INSERT INTO [dbo].[items] ([name]) VALUES (N'Ada');"]);
+
+            // Ordinary NOT NULL fields must still be validated for both INSERT and UPDATE.
+            options.new_rows[0][1] = Value::Null;
+            assert_eq!(prepare_data_grid_save(options.clone()).validation_error, Some(null_write_error("name")));
+            options.new_rows.clear();
+            options.dirty_rows = vec![(0, vec![(1, Value::Null)])];
+            assert_eq!(prepare_data_grid_save(options).validation_error, Some(null_write_error("name")));
+        }
+    }
+
+    #[test]
+    fn prepare_data_grid_save_still_validates_postgres_timestamp_nulls() {
+        let options = serde_json::from_value(json!({
+            "databaseType": "postgres",
+            "tableMeta": {
+                "schema": "public", "tableName": "events", "primaryKeys": ["id"],
+                "columns": [
+                    { "name": "id", "data_type": "integer", "extra": "identity" },
+                    { "name": "created_at", "data_type": "timestamp", "is_nullable": false }
+                ]
+            },
+            "columns": ["id", "created_at"],
+            "newRows": [[null, null]]
+        }))
+        .unwrap();
+        assert_eq!(prepare_data_grid_save(options).validation_error, Some(null_write_error("created_at")));
     }
 
     #[test]
